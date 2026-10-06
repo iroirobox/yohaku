@@ -145,12 +145,24 @@ h2 { font-size: 23px; letter-spacing: .08em; }
   color: var(--ink);
   writing-mode: vertical-rl;
   text-orientation: mixed;
-  overflow-y: auto;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  contain: layout paint;
   line-height: 1.8;
   letter-spacing: .04em;
   white-space: pre-wrap;
   padding: 0;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(79,98,81,.45) transparent;
+  caret-color: var(--accent);
+  cursor: text;
 }
+#pageText::-webkit-scrollbar { height: 7px; }
+#pageText::-webkit-scrollbar-track { background: transparent; }
+#pageText::-webkit-scrollbar-thumb { background: rgba(79,98,81,.35); border-radius: 99px; }
+#pageText:focus { outline: none; }
 
 .editor-footer {
   display: flex;
@@ -171,12 +183,23 @@ dialog::backdrop { background: rgba(35,32,26,.32); backdrop-filter: blur(3px); }
 
 .dialog-card {
   position: relative;
+  display: block;
   padding: 28px;
+  width: 100%;
   background: var(--paper);
   box-shadow: var(--shadow);
 }
 .dialog-close { position: absolute; top: 11px; right: 13px; border: 0; background: none; font-size: 24px; color: var(--muted); }
-.dialog-card label { display: block; font-family: sans-serif; font-size: 11px; color: var(--muted); margin-top: 17px; }
+.dialog-card .field {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  font-family: sans-serif;
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 17px;
+}
+.dialog-card .field > span { display: block; }
 .dialog-card input, .dialog-card select {
   display: block;
   width: 100%;
@@ -197,7 +220,7 @@ dialog::backdrop { background: rgba(35,32,26,.32); backdrop-filter: blur(3px); }
 
 @media (max-width: 480px) {
   .library-head { display: block; }
-  .library-head .primary-button { margin-top: 20px; width: 100%; }
+  .library-head .primary-button { width: 100%; }
   .editor-head { align-items: flex-start; flex-direction: column; }
   .editor-actions { width: 100%; }
   .editor-actions button { flex: 1; }
@@ -221,9 +244,6 @@ dialog::backdrop { background: rgba(35,32,26,.32); backdrop-filter: blur(3px); }
   <main>
     <section id="libraryView" class="view">
       <div class="library-head">
-        <div>
-          <h1>本棚</h1>
-        </div>
         <button class="primary-button" id="newBookButton" type="button">＋ 新しい作品</button>
       </div>
 
@@ -255,7 +275,7 @@ dialog::backdrop { background: rgba(35,32,26,.32); backdrop-filter: blur(3px); }
       <div class="book-stage">
         <div class="book-page-wrap">
           <div id="bookPage" class="book-page" tabindex="0" aria-label="縦書き本文">
-            <textarea id="pageText" spellcheck="false" aria-label="本文"></textarea>
+            <div id="pageText" contenteditable="true" role="textbox" aria-multiline="true" aria-label="本文" spellcheck="false"></div>
           </div>
         </div>
       </div>
@@ -268,8 +288,8 @@ dialog::backdrop { background: rgba(35,32,26,.32); backdrop-filter: blur(3px); }
   </main>
 
   <dialog id="bookDialog">
-    <form method="dialog" id="bookForm" class="dialog-card">
-      <button class="dialog-close" value="cancel" aria-label="閉じる">×</button>
+    <form id="bookForm" class="dialog-card">
+      <button class="dialog-close" type="button" id="dialogCloseButton" aria-label="閉じる">×</button>
       <p class="eyebrow">SETTINGS</p>
       <h2 id="dialogTitle">新しい作品</h2>
       <label>
@@ -309,7 +329,7 @@ dialog::backdrop { background: rgba(35,32,26,.32); backdrop-filter: blur(3px); }
         <input id="startPageNumber" type="number" min="1" max="9999" value="1">
       </label>
       <div class="dialog-actions">
-        <button class="secondary-button" value="cancel">キャンセル</button>
+        <button class="secondary-button" type="button" id="dialogCancelButton">キャンセル</button>
         <button class="primary-button" id="dialogSubmitButton" value="default">作成する</button>
       </div>
     </form>
@@ -326,6 +346,8 @@ let currentBook = null;
 let currentPage = 0;
 let dialogMode = "new";
 let saveTimer = null;
+let inputUiTimer = null;
+let savePromise = null;
 
 const $ = (id) => document.getElementById(id);
 
@@ -435,7 +457,8 @@ function createBookFromForm() {
 function renderPage() {
   if (!currentBook) return;
   const total = currentBook.pages.length;
-  $("pageText").value = currentBook.pages[currentPage] || "";
+  const pageText = $("pageText");
+  pageText.textContent = currentBook.pages[currentPage] || "";
   $("pageInfo").textContent = `本文 ${currentPage + 1} / ${total}　｜　本のページ ${currentBook.startPageNumber + currentPage}`;
   $("characterCount").textContent = `${countBookChars(currentBook)}文字`;
   $("saveStatus").textContent = "自動保存";
@@ -445,7 +468,7 @@ function renderPage() {
 
 function updateCurrentPageInMemory() {
   if (!currentBook) return;
-  currentBook.pages[currentPage] = $("pageText").value;
+  currentBook.pages[currentPage] = $("pageText").innerText.replace(/\r\n/g, "\n");
   currentBook.updatedAt = Date.now();
   $("characterCount").textContent = `${countBookChars(currentBook)}文字`;
   $("pageInfo").textContent = `本文 ${currentPage + 1} / ${currentBook.pages.length}　｜　本のページ ${currentBook.startPageNumber + currentPage}`;
@@ -453,20 +476,23 @@ function updateCurrentPageInMemory() {
 
 function scheduleSave() {
   if (!currentBook) return;
-  updateCurrentPageInMemory();
   $("saveStatus").textContent = "保存中…";
   clearTimeout(saveTimer);
   saveTimer = setTimeout(async () => {
-    await saveState();
+    updateCurrentPageInMemory();
+    if (savePromise) await savePromise;
+    savePromise = saveState();
+    try { await savePromise; } finally { savePromise = null; }
     $("saveStatus").textContent = "自動保存";
-  }, 500);
+  }, 800);
 }
 
 function saveCurrentPage() {
   if (!currentBook) return;
   clearTimeout(saveTimer);
   updateCurrentPageInMemory();
-  saveState();
+  savePromise = saveState();
+  savePromise.finally(() => { savePromise = null; });
   $("saveStatus").textContent = "自動保存";
 }
 
@@ -501,6 +527,13 @@ function escapeHtml(s) {
   return s.replace(/[&<>"']/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
 }
 
+$("dialogCloseButton").addEventListener("click", () => $("bookDialog").close());
+$("dialogCancelButton").addEventListener("click", () => $("bookDialog").close());
+
+$("bookDialog").addEventListener("click", (event) => {
+  if (event.target === $("bookDialog")) $("bookDialog").close();
+});
+
 $("newBookButton").addEventListener("click", () => {
   dialogMode = "new";
   $("dialogTitle").textContent = "新しい作品";
@@ -513,6 +546,7 @@ $("newBookButton").addEventListener("click", () => {
   $("lineGap").value = 1.8;
   $("startPageNumber").value = 1;
   $("bookDialog").showModal();
+  requestAnimationFrame(() => $("bookName").focus());
 });
 
 $("bookForm").addEventListener("submit", (e) => {
@@ -545,6 +579,12 @@ $("prevPageButton").addEventListener("click", () => goPage(-1));
 $("nextPageButton").addEventListener("click", () => goPage(1));
 
 $("pageText").addEventListener("input", () => {
+  // 入力中はDOMを書き換えず、カーソルをブラウザにそのまま任せる。
+  // これにより縦書きの入力カーソルが勝手に別位置へ飛ぶのを防ぐ。
+  clearTimeout(inputUiTimer);
+  inputUiTimer = setTimeout(() => {
+    updateCurrentPageInMemory();
+  }, 120);
   scheduleSave();
 });
 
