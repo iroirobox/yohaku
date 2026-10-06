@@ -210,7 +210,7 @@ dialog::backdrop { background: rgba(35,32,26,.32); backdrop-filter: blur(3px); }
 </head>
 <body>
   <header class="topbar">
-    <button class="text-button" id="backButton" type="button" hidden>本棚</button>
+    <button class="text-button" id="backButton" type="button" hidden>ホーム</button>
     <div class="brand">
       <div class="brand-title">余白</div>
       <div class="brand-sub">縦書き創作帳</div>
@@ -222,9 +222,7 @@ dialog::backdrop { background: rgba(35,32,26,.32); backdrop-filter: blur(3px); }
     <section id="libraryView" class="view">
       <div class="library-head">
         <div>
-          <p class="eyebrow">MY BOOKS</p>
           <h1>本棚</h1>
-          <p class="lead">書くための、静かな一冊。</p>
         </div>
         <button class="primary-button" id="newBookButton" type="button">＋ 新しい作品</button>
       </div>
@@ -272,8 +270,8 @@ dialog::backdrop { background: rgba(35,32,26,.32); backdrop-filter: blur(3px); }
   <dialog id="bookDialog">
     <form method="dialog" id="bookForm" class="dialog-card">
       <button class="dialog-close" value="cancel" aria-label="閉じる">×</button>
-      <p class="eyebrow">NEW BOOK</p>
-      <h2>新しい作品</h2>
+      <p class="eyebrow">SETTINGS</p>
+      <h2 id="dialogTitle">新しい作品</h2>
       <label>
         作品名
         <input id="bookName" maxlength="120" required placeholder="例：夜の向こう側">
@@ -312,7 +310,7 @@ dialog::backdrop { background: rgba(35,32,26,.32); backdrop-filter: blur(3px); }
       </label>
       <div class="dialog-actions">
         <button class="secondary-button" value="cancel">キャンセル</button>
-        <button class="primary-button" value="default">作成する</button>
+        <button class="primary-button" id="dialogSubmitButton" value="default">作成する</button>
       </div>
     </form>
   </dialog>
@@ -327,6 +325,7 @@ let state = { books: [], activeBookId: null };
 let currentBook = null;
 let currentPage = 0;
 let dialogMode = "new";
+let saveTimer = null;
 
 const $ = (id) => document.getElementById(id);
 
@@ -444,14 +443,31 @@ function renderPage() {
   $("nextPageButton").textContent = currentPage === total - 1 ? "次のページ ＋" : "次へ";
 }
 
-function saveCurrentPage() {
+function updateCurrentPageInMemory() {
   if (!currentBook) return;
   currentBook.pages[currentPage] = $("pageText").value;
   currentBook.updatedAt = Date.now();
-  saveState();
   $("characterCount").textContent = `${countBookChars(currentBook)}文字`;
   $("pageInfo").textContent = `本文 ${currentPage + 1} / ${currentBook.pages.length}　｜　本のページ ${currentBook.startPageNumber + currentPage}`;
-  $("saveStatus").textContent = "保存しました";
+}
+
+function scheduleSave() {
+  if (!currentBook) return;
+  updateCurrentPageInMemory();
+  $("saveStatus").textContent = "保存中…";
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(async () => {
+    await saveState();
+    $("saveStatus").textContent = "自動保存";
+  }, 500);
+}
+
+function saveCurrentPage() {
+  if (!currentBook) return;
+  clearTimeout(saveTimer);
+  updateCurrentPageInMemory();
+  saveState();
+  $("saveStatus").textContent = "自動保存";
 }
 
 function goPage(delta) {
@@ -487,6 +503,8 @@ function escapeHtml(s) {
 
 $("newBookButton").addEventListener("click", () => {
   dialogMode = "new";
+  $("dialogTitle").textContent = "新しい作品";
+  $("dialogSubmitButton").textContent = "作成する";
   $("bookForm").reset();
   $("bookSize").value = "bunko";
   $("charsPerLine").value = 20;
@@ -527,12 +545,14 @@ $("prevPageButton").addEventListener("click", () => goPage(-1));
 $("nextPageButton").addEventListener("click", () => goPage(1));
 
 $("pageText").addEventListener("input", () => {
-  saveCurrentPage();
+  scheduleSave();
 });
 
 $("settingsButton").addEventListener("click", () => {
   if (!currentBook) return;
   dialogMode = "edit";
+  $("dialogTitle").textContent = "設定";
+  $("dialogSubmitButton").textContent = "編集する";
   $("bookName").value = currentBook.name;
   $("bookSize").value = currentBook.size;
   $("charsPerLine").value = currentBook.charsPerLine;
