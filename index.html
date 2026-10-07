@@ -134,32 +134,52 @@ h2 { font-size: 23px; letter-spacing: .08em; }
   position: relative;
   overflow: hidden;
 }
+.page-number {
+  position: absolute;
+  bottom: 3.8%;
+  font-family: sans-serif;
+  font-size: 9px;
+  color: var(--muted);
+  letter-spacing: .04em;
+  pointer-events: none;
+}
+.page-number.center { left: 50%; transform: translateX(-50%); }
+.page-number.inside { left: 12%; }
+.page-number.outside { right: 12%; }
 
 #pageText {
   width: 100%;
   height: 100%;
+  display: block;
+  box-sizing: border-box;
   border: 0;
   outline: 0;
   resize: none;
   background: transparent;
   color: var(--ink);
+  font-family: "Noto Serif JP", "Yu Mincho", "Hiragino Mincho ProN", serif;
+  font-weight: 400;
   writing-mode: vertical-rl;
   text-orientation: mixed;
   overflow-x: auto;
   overflow-y: hidden;
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
-  contain: layout paint;
   line-height: 1.8;
   letter-spacing: .04em;
   white-space: pre-wrap;
   padding: 0;
+  margin: 0;
   scrollbar-width: thin;
-  scrollbar-color: rgba(79,98,81,.45) transparent;
+  scrollbar-color: rgba(79,98,81,.38) transparent;
   caret-color: var(--accent);
+  caret-shape: bar;
   cursor: text;
+  text-rendering: optimizeLegibility;
+  -webkit-user-select: text;
+  user-select: text;
 }
-#pageText::-webkit-scrollbar { height: 7px; }
+#pageText::-webkit-scrollbar { height: 5px; }
 #pageText::-webkit-scrollbar-track { background: transparent; }
 #pageText::-webkit-scrollbar-thumb { background: rgba(79,98,81,.35); border-radius: 99px; }
 #pageText:focus { outline: none; }
@@ -269,13 +289,14 @@ dialog::backdrop { background: rgba(35,32,26,.32); backdrop-filter: blur(3px); }
         <div class="editor-actions">
           <button class="secondary-button" id="prevPageButton" type="button">前へ</button>
           <button class="secondary-button" id="nextPageButton" type="button">次へ</button>
+          <button class="secondary-button" id="pdfButton" type="button">PDFを作る</button>
         </div>
       </div>
 
       <div class="book-stage">
         <div class="book-page-wrap">
           <div id="bookPage" class="book-page" tabindex="0" aria-label="縦書き本文">
-            <div id="pageText" contenteditable="true" role="textbox" aria-multiline="true" aria-label="本文" spellcheck="false"></div>
+            <textarea id="pageText" aria-label="本文" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"></textarea>
           </div>
         </div>
       </div>
@@ -324,10 +345,31 @@ dialog::backdrop { background: rgba(35,32,26,.32); backdrop-filter: blur(3px); }
           <input id="lineGap" type="number" min="1" max="3" step="0.1" value="1.8">
         </label>
       </div>
-      <label>
-        開始ページ番号
-        <input id="startPageNumber" type="number" min="1" max="9999" value="1">
-      </label>
+      <div class="two-cols">
+        <label>
+          ノド側の余白
+          <input id="gutter" type="number" min="0" max="40" value="4">
+        </label>
+        <label>
+          版面の上下余白
+          <input id="verticalMargin" type="number" min="5" max="25" value="11">
+        </label>
+      </div>
+      <div class="two-cols">
+        <label>
+          ページ番号
+          <select id="pageNumberPosition">
+            <option value="bottom-center">下・中央</option>
+            <option value="bottom-outside">下・小口側</option>
+            <option value="bottom-inside">下・ノド側</option>
+            <option value="none">表示しない</option>
+          </select>
+        </label>
+        <label>
+          開始ページ番号
+          <input id="startPageNumber" type="number" min="1" max="9999" value="1">
+        </label>
+      </div>
       <div class="dialog-actions">
         <button class="secondary-button" type="button" id="dialogCancelButton">キャンセル</button>
         <button class="primary-button" id="dialogSubmitButton" value="default">作成する</button>
@@ -348,6 +390,7 @@ let dialogMode = "new";
 let saveTimer = null;
 let inputUiTimer = null;
 let savePromise = null;
+let paginationTimer = null;
 
 const $ = (id) => document.getElementById(id);
 
@@ -443,6 +486,9 @@ function createBookFromForm() {
     linesPerPage: clamp(Number($("linesPerPage").value) || 16, 5, 40),
     fontSize: clamp(Number($("fontSize").value) || 16, 8, 36),
     lineGap: clamp(Number($("lineGap").value) || 1.8, 1, 3),
+    gutter: clamp(Number($("gutter").value) || 4, 0, 40),
+    verticalMargin: clamp(Number($("verticalMargin").value) || 11, 5, 25),
+    pageNumberPosition: $("pageNumberPosition").value || "bottom-center",
     startPageNumber: clamp(Number($("startPageNumber").value) || 1, 1, 9999),
     pages: [""],
     updatedAt: Date.now()
@@ -458,8 +504,9 @@ function renderPage() {
   if (!currentBook) return;
   const total = currentBook.pages.length;
   const pageText = $("pageText");
-  pageText.textContent = currentBook.pages[currentPage] || "";
+  pageText.value = currentBook.pages[currentPage] || "";
   $("pageInfo").textContent = `本文 ${currentPage + 1} / ${total}　｜　本のページ ${currentBook.startPageNumber + currentPage}`;
+  renderPageNumber();
   $("characterCount").textContent = `${countBookChars(currentBook)}文字`;
   $("saveStatus").textContent = "自動保存";
   $("prevPageButton").disabled = currentPage === 0;
@@ -468,7 +515,7 @@ function renderPage() {
 
 function updateCurrentPageInMemory() {
   if (!currentBook) return;
-  currentBook.pages[currentPage] = $("pageText").innerText.replace(/\r\n/g, "\n");
+  currentBook.pages[currentPage] = $("pageText").value.replace(/\r\n/g, "\n");
   currentBook.updatedAt = Date.now();
   $("characterCount").textContent = `${countBookChars(currentBook)}文字`;
   $("pageInfo").textContent = `本文 ${currentPage + 1} / ${currentBook.pages.length}　｜　本のページ ${currentBook.startPageNumber + currentPage}`;
@@ -497,19 +544,97 @@ function saveCurrentPage() {
 }
 
 function goPage(delta) {
-  saveCurrentPage();
+  if (!currentBook) return;
+  clearTimeout(saveTimer);
+  updateCurrentPageInMemory();
+  normalizeCurrentPages();
+  currentBook.updatedAt = Date.now();
+  saveState();
   const target = currentPage + delta;
   if (target < 0) return;
   if (target >= currentBook.pages.length) currentBook.pages.push("");
   currentPage = target;
   renderPage();
-  $("pageText").focus();
+  requestAnimationFrame(() => $("pageText").focus());
 }
 
 function applyBookStyle(book) {
   const font = Math.max(10, Math.min(28, book.fontSize));
+  const vertical = clamp(Number(book.verticalMargin) || 11, 5, 25);
+  const gutter = clamp(Number(book.gutter) || 4, 0, 40);
   $("pageText").style.fontSize = `${font}px`;
-  $("pageText").style.lineHeight = String(book.lineGap);
+  $("pageText").style.lineHeight = String(book.lineGap || 1.8);
+  $("bookPage").style.paddingTop = `${vertical}%`;
+  $("bookPage").style.paddingBottom = `${vertical}%`;
+  $("bookPage").style.paddingRight = `calc(10% + ${gutter}px)`;
+  $("bookPage").style.paddingLeft = `12%`;
+  const ratios = { bunko: "105 / 148", shinsho: "103 / 182", a5: "148 / 210" };
+  $("bookPage").style.aspectRatio = ratios[book.size] || ratios.bunko;
+}
+
+function renderPageNumber() {
+  let el = $("pageNumber");
+  if (!el) {
+    el = document.createElement("span");
+    el.id = "pageNumber";
+    el.className = "page-number";
+    $("bookPage").appendChild(el);
+  }
+  const pos = currentBook?.pageNumberPosition || "bottom-center";
+  el.textContent = currentBook ? String(currentBook.startPageNumber + currentPage) : "";
+  el.className = `page-number ${pos === "bottom-center" ? "center" : pos === "bottom-inside" ? "inside" : pos === "bottom-outside" ? "outside" : "none"}`;
+  el.hidden = pos === "none";
+}
+
+function normalizeLineBreaks(text) {
+  return String(text || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+}
+
+function paginateText(text, charsPerLine, linesPerPage) {
+  const cpl = clamp(Number(charsPerLine) || 20, 5, 60);
+  const lpp = clamp(Number(linesPerPage) || 16, 5, 40);
+  const source = normalizeLineBreaks(text);
+  const pages = [];
+  let pageLines = [];
+  let line = "";
+
+  const pushLine = () => {
+    pageLines.push(line);
+    line = "";
+    if (pageLines.length >= lpp) {
+      pages.push(pageLines.join("\n"));
+      pageLines = [];
+    }
+  };
+
+  for (const ch of source) {
+    if (ch === "\n") { pushLine(); continue; }
+    line += ch;
+    if (line.length >= cpl) {
+      // Japanese manuscript-friendly kinsoku: avoid starting a line with common closing punctuation.
+      const last = line.at(-1) || "";
+      const kinsoku = "、。，．・：；？！)]}〉》」』】〕）］｝!?";
+      if (kinsoku.includes(last) && line.length > 1) {
+        const moved = line.at(-1);
+        line = line.slice(0, -1);
+        pushLine();
+        line = moved;
+      } else {
+        pushLine();
+      }
+    }
+  }
+  if (line.length || pageLines.length || !pages.length) pushLine();
+  if (!pageLines.length && pages.at(-1) === "") pages.pop();
+  return pages.length ? pages : [""];
+}
+
+function normalizeCurrentPages() {
+  if (!currentBook) return;
+  const combined = currentBook.pages.map(normalizeLineBreaks).join("\n");
+  const pages = paginateText(combined, currentBook.charsPerLine, currentBook.linesPerPage);
+  currentBook.pages = pages;
+  currentPage = clamp(currentPage, 0, pages.length - 1);
 }
 
 function countBookChars(book) {
@@ -544,6 +669,9 @@ $("newBookButton").addEventListener("click", () => {
   $("linesPerPage").value = 16;
   $("fontSize").value = 16;
   $("lineGap").value = 1.8;
+  $("gutter").value = 4;
+  $("verticalMargin").value = 11;
+  $("pageNumberPosition").value = "bottom-center";
   $("startPageNumber").value = 1;
   $("bookDialog").showModal();
   requestAnimationFrame(() => $("bookName").focus());
@@ -558,6 +686,9 @@ $("bookForm").addEventListener("submit", (e) => {
     currentBook.linesPerPage = clamp(Number($("linesPerPage").value) || 16, 5, 40);
     currentBook.fontSize = clamp(Number($("fontSize").value) || 16, 8, 36);
     currentBook.lineGap = clamp(Number($("lineGap").value) || 1.8, 1, 3);
+    currentBook.gutter = clamp(Number($("gutter").value) || 4, 0, 40);
+    currentBook.verticalMargin = clamp(Number($("verticalMargin").value) || 11, 5, 25);
+    currentBook.pageNumberPosition = $("pageNumberPosition").value || "bottom-center";
     currentBook.startPageNumber = clamp(Number($("startPageNumber").value) || 1, 1, 9999);
     currentBook.updatedAt = Date.now();
     saveState();
@@ -579,12 +710,8 @@ $("prevPageButton").addEventListener("click", () => goPage(-1));
 $("nextPageButton").addEventListener("click", () => goPage(1));
 
 $("pageText").addEventListener("input", () => {
-  // 入力中はDOMを書き換えず、カーソルをブラウザにそのまま任せる。
-  // これにより縦書きの入力カーソルが勝手に別位置へ飛ぶのを防ぐ。
-  clearTimeout(inputUiTimer);
-  inputUiTimer = setTimeout(() => {
-    updateCurrentPageInMemory();
-  }, 120);
+  // 入力中は value / DOM / selection を書き換えない。IMEとカーソルをブラウザに任せる。
+  updateCurrentPageInMemory();
   scheduleSave();
 });
 
@@ -598,10 +725,145 @@ $("settingsButton").addEventListener("click", () => {
   $("charsPerLine").value = currentBook.charsPerLine;
   $("linesPerPage").value = currentBook.linesPerPage;
   $("fontSize").value = currentBook.fontSize;
-  $("lineGap").value = currentBook.lineGap;
+  $("lineGap").value = currentBook.lineGap || 1.8;
+  $("gutter").value = currentBook.gutter ?? 4;
+  $("verticalMargin").value = currentBook.verticalMargin ?? 11;
+  $("pageNumberPosition").value = currentBook.pageNumberPosition || "bottom-center";
   $("startPageNumber").value = currentBook.startPageNumber;
   $("bookDialog").showModal();
 });
+
+function bookDimensions(book) {
+  if (book.size === "shinsho") return { w: 103, h: 182 };
+  if (book.size === "a5") return { w: 148, h: 210 };
+  return { w: 105, h: 148 };
+}
+
+function drawVerticalPage(canvas, book, text, pageIndex) {
+  const dim = bookDimensions(book);
+  const scale = 6;
+  canvas.width = Math.round(dim.w * scale);
+  canvas.height = Math.round(dim.h * scale);
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#fffefa";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  const marginTop = canvas.height * (clamp(Number(book.verticalMargin) || 11, 5, 25) / 100);
+  const marginBottom = marginTop;
+  const gutter = (clamp(Number(book.gutter) || 4, 0, 40) / 100) * canvas.width;
+  const side = canvas.width * 0.10 + gutter;
+  const left = canvas.width * 0.10;
+  const usableH = canvas.height - marginTop - marginBottom;
+  const charsPerLine = clamp(Number(book.charsPerLine) || 20, 5, 60);
+  const linesPerPage = clamp(Number(book.linesPerPage) || 16, 5, 40);
+  const fontPx = Math.max(10, Math.min(28, Number(book.fontSize) || 16)) * scale;
+  const lineHeight = fontPx * (Number(book.lineGap) || 1.8);
+  const charHeight = usableH / charsPerLine;
+  const colGap = Math.max(fontPx * 0.45, (canvas.width - side - left) / Math.max(1, linesPerPage));
+  ctx.fillStyle = "#2f2d28";
+  ctx.font = `400 ${fontPx}px "Noto Serif JP", "Yu Mincho", "Hiragino Mincho ProN", serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+
+  const lines = normalizeLineBreaks(text).split("\n");
+  const wrapped = [];
+  for (const raw of lines) {
+    if (!raw) { wrapped.push(""); continue; }
+    let line = "";
+    for (const ch of raw) {
+      line += ch;
+      if (line.length >= charsPerLine) { wrapped.push(line); line = ""; }
+    }
+    if (line) wrapped.push(line);
+  }
+  const drawLines = wrapped.slice(0, linesPerPage);
+  drawLines.forEach((line, i) => {
+    const x = canvas.width - side - i * colGap - colGap / 2;
+    [...line].forEach((ch, j) => {
+      const y = marginTop + (j + 0.5) * charHeight;
+      ctx.fillText(ch, x, y);
+    });
+  });
+
+  const pos = book.pageNumberPosition || "bottom-center";
+  if (pos !== "none") {
+    ctx.font = `400 ${9 * scale}px sans-serif`;
+    ctx.fillStyle = "#77736b";
+    const number = String((Number(book.startPageNumber) || 1) + pageIndex);
+    const y = canvas.height - canvas.height * 0.035;
+    const x = pos === "bottom-center" ? canvas.width / 2 : pos === "bottom-inside" ? canvas.width * 0.12 : canvas.width * 0.88;
+    ctx.fillText(number, x, y);
+  }
+}
+
+function dataUrlToBytes(dataUrl) {
+  const base64 = dataUrl.split(",")[1];
+  const bin = atob(base64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+function buildImagePdf(images, pageWmm, pageHmm) {
+  const enc = new TextEncoder();
+  const chunks = [];
+  const offsets = [0];
+  let length = 0;
+  const push = (x) => { const b = typeof x === "string" ? enc.encode(x) : x; chunks.push(b); length += b.length; };
+  const objects = [];
+  let objNum = 1;
+  const catalog = objNum++; const pagesObj = objNum++;
+  const pageObjs = images.map(() => objNum++);
+  const imageObjs = images.map(() => objNum++);
+  const contentObjs = images.map(() => objNum++);
+
+  push("%PDF-1.4\n%\xFF\xFF\xFF\xFF\n");
+  const writeObj = (n, body, binary) => { offsets[n] = length; push(`${n} 0 obj\n`); if (binary) push(body); else push(body); push("\nendobj\n"); };
+  writeObj(catalog, `<< /Type /Catalog /Pages ${pagesObj} 0 R >>`);
+  writeObj(pagesObj, `<< /Type /Pages /Kids [${pageObjs.map(n => `${n} 0 R`).join(" ")}] /Count ${images.length} >>`);
+
+  images.forEach((img, i) => {
+    const bytes = dataUrlToBytes(img.dataUrl);
+    offsets[imageObjs[i]] = length;
+    push(`${imageObjs[i]} 0 obj\n<< /Type /XObject /Subtype /Image /Width ${img.width} /Height ${img.height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${bytes.length} >>\nstream\n`);
+    push(bytes);
+    push("\nendstream\nendobj\n");
+    const w = pageWmm * 72 / 25.4; const h = pageHmm * 72 / 25.4;
+    const stream = `q\n${w} 0 0 ${h} 0 0 cm\n/Im0 Do\nQ\n`;
+    writeObj(contentObjs[i], `<< /Length ${enc.encode(stream).length} >>\nstream\n${stream}endstream`);
+    writeObj(pageObjs[i], `<< /Type /Page /Parent ${pagesObj} 0 R /MediaBox [0 0 ${w} ${h}] /Resources << /XObject << /Im0 ${imageObjs[i]} 0 R >> >> /Contents ${contentObjs[i]} 0 R >>`);
+  });
+  const xref = length;
+  push(`xref\n0 ${objNum}\n0000000000 65535 f \n`);
+  for (let n = 1; n < objNum; n++) push(`${String(offsets[n] || 0).padStart(10, "0")} 00000 n \n`);
+  push(`trailer\n<< /Size ${objNum} /Root ${catalog} 0 R >>\nstartxref\n${xref}\n%%EOF`);
+  const total = new Uint8Array(length); let at = 0; for (const c of chunks) { total.set(c, at); at += c.length; }
+  return total;
+}
+
+async function generatePdf() {
+  if (!currentBook) return;
+  saveCurrentPage();
+  normalizeCurrentPages();
+  renderPage();
+  const canvas = document.createElement("canvas");
+  const dim = bookDimensions(currentBook);
+  const images = [];
+  for (let i = 0; i < currentBook.pages.length; i++) {
+    drawVerticalPage(canvas, currentBook, currentBook.pages[i], i);
+    images.push({ dataUrl: canvas.toDataURL("image/jpeg", 0.92), width: canvas.width, height: canvas.height });
+    await new Promise(r => setTimeout(r, 0));
+  }
+  const pdf = buildImagePdf(images, dim.w, dim.h);
+  const blob = new Blob([pdf], { type: "application/pdf" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${currentBook.name || "余白"}.pdf`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+$("pdfButton").addEventListener("click", generatePdf);
 
 $("backupButton").addEventListener("click", () => {
   const payload = {
@@ -638,6 +900,16 @@ $("restoreInput").addEventListener("change", async (e) => {
 async function init() {
   try {
     await loadState();
+    state.books.forEach(book => {
+      book.gutter ??= 4;
+      book.verticalMargin ??= 11;
+      book.pageNumberPosition ??= "bottom-center";
+      book.charsPerLine ??= 20;
+      book.linesPerPage ??= 16;
+      book.fontSize ??= 16;
+      book.lineGap ??= 1.8;
+      book.startPageNumber ??= 1;
+    });
     showLibrary();
   } catch (e) {
     console.error(e);
