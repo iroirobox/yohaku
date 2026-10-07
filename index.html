@@ -138,7 +138,7 @@ h2 { font-size: 23px; letter-spacing: .08em; }
   position: absolute;
   bottom: 3.8%;
   font-family: sans-serif;
-  font-size: 9px;
+  font-size: 7px;
   color: var(--muted);
   letter-spacing: .04em;
   pointer-events: none;
@@ -150,11 +150,14 @@ h2 { font-size: 23px; letter-spacing: .08em; }
 #pageText {
   width: 100%;
   height: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+.writing-surface {
   display: block;
   box-sizing: border-box;
   border: 0;
   outline: 0;
-  resize: none;
   background: transparent;
   color: var(--ink);
   font-family: "Noto Serif JP", "Yu Mincho", "Hiragino Mincho ProN", serif;
@@ -168,6 +171,7 @@ h2 { font-size: 23px; letter-spacing: .08em; }
   line-height: 1.8;
   letter-spacing: .04em;
   white-space: pre-wrap;
+  word-break: break-all;
   padding: 0;
   margin: 0;
   scrollbar-width: thin;
@@ -175,14 +179,19 @@ h2 { font-size: 23px; letter-spacing: .08em; }
   caret-color: var(--accent);
   caret-shape: bar;
   cursor: text;
-  text-rendering: optimizeLegibility;
   -webkit-user-select: text;
   user-select: text;
+  -webkit-touch-callout: none;
 }
-#pageText::-webkit-scrollbar { height: 5px; }
-#pageText::-webkit-scrollbar-track { background: transparent; }
-#pageText::-webkit-scrollbar-thumb { background: rgba(79,98,81,.35); border-radius: 99px; }
-#pageText:focus { outline: none; }
+.writing-surface:empty::before {
+  content: attr(data-placeholder);
+  color: rgba(119,117,109,.45);
+  pointer-events: none;
+}
+.writing-surface::-webkit-scrollbar { height: 4px; }
+.writing-surface::-webkit-scrollbar-track { background: transparent; }
+.writing-surface::-webkit-scrollbar-thumb { background: rgba(79,98,81,.30); border-radius: 99px; }
+.writing-surface:focus { outline: none; }
 
 .editor-footer {
   display: flex;
@@ -296,7 +305,7 @@ dialog::backdrop { background: rgba(35,32,26,.32); backdrop-filter: blur(3px); }
       <div class="book-stage">
         <div class="book-page-wrap">
           <div id="bookPage" class="book-page" tabindex="0" aria-label="縦書き本文">
-            <textarea id="pageText" aria-label="本文" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"></textarea>
+            <div id="pageText" class="writing-surface" contenteditable="true" role="textbox" aria-label="本文" spellcheck="false" autocorrect="off" autocapitalize="off" data-placeholder="ここから書きはじめる"></div>
           </div>
         </div>
       </div>
@@ -450,7 +459,7 @@ function showEditor(book) {
   $("settingsButton").hidden = false;
   $("editorTitle").textContent = book.name || "無題";
   applyBookStyle(book);
-  renderPage();
+  renderPage(true);
 }
 
 function renderLibrary() {
@@ -500,25 +509,31 @@ function createBookFromForm() {
   showEditor(book);
 }
 
-function renderPage() {
+function editorText() {
+  const el = $("pageText");
+  return normalizeLineBreaks(el.innerText || "");
+}
+
+function renderPage(focus = false) {
   if (!currentBook) return;
   const total = currentBook.pages.length;
   const pageText = $("pageText");
-  pageText.value = currentBook.pages[currentPage] || "";
+  // 入力中はDOMを書き換えない。ページ移動時だけ内容を差し替える。
+  pageText.textContent = currentBook.pages[currentPage] || "";
   $("pageInfo").textContent = `本文 ${currentPage + 1} / ${total}　｜　本のページ ${currentBook.startPageNumber + currentPage}`;
   renderPageNumber();
   $("characterCount").textContent = `${countBookChars(currentBook)}文字`;
   $("saveStatus").textContent = "自動保存";
   $("prevPageButton").disabled = currentPage === 0;
   $("nextPageButton").textContent = currentPage === total - 1 ? "次のページ ＋" : "次へ";
+  if (focus) requestAnimationFrame(() => pageText.focus({preventScroll:true}));
 }
 
 function updateCurrentPageInMemory() {
   if (!currentBook) return;
-  currentBook.pages[currentPage] = $("pageText").value.replace(/\r\n/g, "\n");
+  currentBook.pages[currentPage] = editorText();
   currentBook.updatedAt = Date.now();
   $("characterCount").textContent = `${countBookChars(currentBook)}文字`;
-  $("pageInfo").textContent = `本文 ${currentPage + 1} / ${currentBook.pages.length}　｜　本のページ ${currentBook.startPageNumber + currentPage}`;
 }
 
 function scheduleSave() {
@@ -555,7 +570,7 @@ function goPage(delta) {
   if (target >= currentBook.pages.length) currentBook.pages.push("");
   currentPage = target;
   renderPage();
-  requestAnimationFrame(() => $("pageText").focus());
+  requestAnimationFrame(() => $("pageText").focus({preventScroll:true}));
 }
 
 function applyBookStyle(book) {
@@ -710,7 +725,17 @@ $("prevPageButton").addEventListener("click", () => goPage(-1));
 $("nextPageButton").addEventListener("click", () => goPage(1));
 
 $("pageText").addEventListener("input", () => {
-  // 入力中は value / DOM / selection を書き換えない。IMEとカーソルをブラウザに任せる。
+  // 入力中はDOM・selection・スクロールを一切書き換えない。
+  // IMEと入力カーソルはブラウザに完全に任せる。
+  updateCurrentPageInMemory();
+  scheduleSave();
+});
+
+$("pageText").addEventListener("compositionstart", () => {
+  $("pageText").dataset.composing = "1";
+});
+$("pageText").addEventListener("compositionend", () => {
+  delete $("pageText").dataset.composing;
   updateCurrentPageInMemory();
   scheduleSave();
 });
@@ -741,56 +766,62 @@ function bookDimensions(book) {
 
 function drawVerticalPage(canvas, book, text, pageIndex) {
   const dim = bookDimensions(book);
-  const scale = 6;
+  const scale = 4;
   canvas.width = Math.round(dim.w * scale);
   canvas.height = Math.round(dim.h * scale);
-  const ctx = canvas.getContext("2d");
+  const ctx = canvas.getContext("2d", { alpha: false });
+  ctx.setTransform(1,0,0,1,0,0);
   ctx.fillStyle = "#fffefa";
   ctx.fillRect(0, 0, canvas.width, canvas.height);
-  const marginTop = canvas.height * (clamp(Number(book.verticalMargin) || 11, 5, 25) / 100);
-  const marginBottom = marginTop;
-  const gutter = (clamp(Number(book.gutter) || 4, 0, 40) / 100) * canvas.width;
-  const side = canvas.width * 0.10 + gutter;
-  const left = canvas.width * 0.10;
-  const usableH = canvas.height - marginTop - marginBottom;
-  const charsPerLine = clamp(Number(book.charsPerLine) || 20, 5, 60);
-  const linesPerPage = clamp(Number(book.linesPerPage) || 16, 5, 40);
+
+  const top = canvas.height * (clamp(Number(book.verticalMargin) || 11, 5, 25) / 100);
+  const bottom = canvas.height * (clamp(Number(book.verticalMargin) || 11, 5, 25) / 100);
+  const inner = canvas.width * (0.10 + clamp(Number(book.gutter) || 4, 0, 40) / 100);
+  const outer = canvas.width * 0.10;
+  const usableW = Math.max(1, canvas.width - inner - outer);
+  const usableH = Math.max(1, canvas.height - top - bottom);
+  const cpl = clamp(Number(book.charsPerLine) || 20, 5, 60);
+  const lpp = clamp(Number(book.linesPerPage) || 16, 5, 40);
   const fontPx = Math.max(10, Math.min(28, Number(book.fontSize) || 16)) * scale;
-  const lineHeight = fontPx * (Number(book.lineGap) || 1.8);
-  const charHeight = usableH / charsPerLine;
-  const colGap = Math.max(fontPx * 0.45, (canvas.width - side - left) / Math.max(1, linesPerPage));
+  const charStep = usableH / cpl;
+  const colStep = usableW / lpp;
+
   ctx.fillStyle = "#2f2d28";
-  ctx.font = `400 ${fontPx}px "Noto Serif JP", "Yu Mincho", "Hiragino Mincho ProN", serif`;
+  ctx.font = `400 ${fontPx}px serif`;
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
 
-  const lines = normalizeLineBreaks(text).split("\n");
-  const wrapped = [];
-  for (const raw of lines) {
-    if (!raw) { wrapped.push(""); continue; }
-    let line = "";
-    for (const ch of raw) {
-      line += ch;
-      if (line.length >= charsPerLine) { wrapped.push(line); line = ""; }
+  const rawLines = normalizeLineBreaks(text).split("\n");
+  const columns = [];
+  for (const raw of rawLines) {
+    if (raw === "") { columns.push(""); continue; }
+    let rest = raw;
+    while (rest.length > cpl) {
+      let cut = cpl;
+      const next = rest[cut];
+      const closing = "、。，．・：；？！)]}〉》」』】〕）］｝!?」』】";
+      if (next && closing.includes(next) && cut > 1) cut--;
+      columns.push(rest.slice(0, cut));
+      rest = rest.slice(cut);
     }
-    if (line) wrapped.push(line);
+    columns.push(rest);
   }
-  const drawLines = wrapped.slice(0, linesPerPage);
-  drawLines.forEach((line, i) => {
-    const x = canvas.width - side - i * colGap - colGap / 2;
+
+  columns.slice(0, lpp).forEach((line, i) => {
+    const x = canvas.width - inner - colStep * (i + 0.5);
     [...line].forEach((ch, j) => {
-      const y = marginTop + (j + 0.5) * charHeight;
+      const y = top + charStep * (j + 0.5);
       ctx.fillText(ch, x, y);
     });
   });
 
   const pos = book.pageNumberPosition || "bottom-center";
   if (pos !== "none") {
-    ctx.font = `400 ${9 * scale}px sans-serif`;
+    ctx.font = `400 ${5.5 * scale}px sans-serif`;
     ctx.fillStyle = "#77736b";
     const number = String((Number(book.startPageNumber) || 1) + pageIndex);
-    const y = canvas.height - canvas.height * 0.035;
-    const x = pos === "bottom-center" ? canvas.width / 2 : pos === "bottom-inside" ? canvas.width * 0.12 : canvas.width * 0.88;
+    const y = canvas.height - canvas.height * 0.025;
+    const x = pos === "bottom-center" ? canvas.width / 2 : pos === "bottom-inside" ? canvas.width * 0.10 : canvas.width * 0.90;
     ctx.fillText(number, x, y);
   }
 }
