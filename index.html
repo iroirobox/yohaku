@@ -215,7 +215,28 @@ function buildTextPdf(pages,b,wmm,hmm){
   add(`trailer\n<< /Size ${total+1} /Root ${catalog} 0 R >>\nstartxref\n${xref}\n%%EOF`);
   const out=new Uint8Array(len);let at=0;for(const c of chunks){out.set(c,at);at+=c.length}return out;
 }
-async function generatePdf(){if(!currentBook)return;saveCurrentPage();normalizeCurrentPages();const d=bookDimensions(currentBook),pdf=buildTextPdf(currentBook.pages,currentBook,d.w,d.h),url=URL.createObjectURL(new Blob([pdf],{type:"application/pdf"}));const win=window.open(url,"_blank");if(!win){const a=document.createElement("a");a.href=url;a.target="_blank";a.rel="noopener";a.click()}setTimeout(()=>URL.revokeObjectURL(url),60000)}
+async function generatePdf(previewWindow=null){
+  if(!currentBook)return;
+  saveCurrentPage();
+  normalizeCurrentPages();
+  const d=bookDimensions(currentBook);
+  const pdf=buildTextPdf(currentBook.pages,currentBook,d.w,d.h);
+  const blob=new Blob([pdf],{type:"application/pdf"});
+  const url=URL.createObjectURL(blob);
+  if(previewWindow && !previewWindow.closed){
+    previewWindow.location.href=url;
+  }else{
+    const a=document.createElement("a");
+    a.href=url;
+    a.target="_blank";
+    a.rel="noopener";
+    a.download=`${currentBook.name||"余白"}.pdf`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }
+  setTimeout(()=>URL.revokeObjectURL(url),60000);
+}
 
 $("writingEditor").addEventListener("input",()=>{const t=normalizeLineBreaks($("writingEditor").value);$("characterCount").textContent=`${t.replace(/\n/g,"").length}文字`;scheduleSave();scheduleRenderCaret()});
 $("writingEditor").addEventListener("keyup",scheduleRenderCaret);
@@ -223,7 +244,26 @@ $("writingEditor").addEventListener("click",scheduleRenderCaret);
 $("writingEditor").addEventListener("select",scheduleRenderCaret);
 $("writingEditor").addEventListener("blur",()=>{if(currentBook){saveCurrentPage();void saveState()}});
 $("deleteWorkButton").onclick=async()=>{if(!currentBook)return;if(!confirm(`「${currentBook.name||"無題"}」を削除しますか？\nこの操作は元に戻せません。`))return;const id=currentBook.id;state.books=state.books.filter(b=>b.id!==id);if(state.activeBookId===id)state.activeBookId=null;await saveState();$("bookDialog").close();showLibrary()};
-$("pdfButton").onclick=async()=>{try{$("pdfButton").disabled=true;$("pdfButton").textContent="PDFを作成中…";saveCurrentPage();await saveState();await generatePdf()}catch(e){console.error(e);alert("PDFを作成できませんでした。")}finally{$("pdfButton").disabled=false;$("pdfButton").textContent="PDFを作る"}};
+$("pdfButton").onclick=async()=>{
+  const previewWindow=window.open("about:blank","_blank");
+  try{
+    $("pdfButton").disabled=true;
+    $("pdfButton").textContent="PDFを作成中…";
+    saveCurrentPage();
+    await saveState();
+    await generatePdf(previewWindow);
+    if(previewWindow && !previewWindow.closed){
+      try{previewWindow.focus()}catch{}
+    }
+  }catch(e){
+    console.error(e);
+    if(previewWindow && !previewWindow.closed)previewWindow.close();
+    alert("PDFを作成できませんでした。もう一度お試しください。");
+  }finally{
+    $("pdfButton").disabled=false;
+    $("pdfButton").textContent="PDFを作る";
+  }
+};
 $("backupButton").onclick=()=>{const payload={format:"yohaku-backup",version:1,exportedAt:new Date().toISOString(),state};const url=URL.createObjectURL(new Blob([JSON.stringify(payload,null,2)],{type:"application/json"})),a=document.createElement("a");a.href=url;a.download=`余白_バックアップ_${new Date().toISOString().slice(0,10)}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000)};
 $("restoreInput").onchange=async e=>{const f=e.target.files[0];if(!f)return;try{const d=JSON.parse(await f.text());if(d.format!=="yohaku-backup"||!d.state?.books)throw 0;state=d.state;await saveState();showLibrary();alert("バックアップを復元しました。")}catch{alert("このバックアップファイルは読み込めませんでした。")}e.target.value=""};
 async function init(){try{await loadState();state.books.forEach(b=>{b.gutter??=4;b.verticalMargin??=11;b.pageNumberPosition??="bottom-outside";b.charsPerLine??=20;b.linesPerPage??=16;b.fontFamily??="mincho";b.fontSize??=16;b.lineGap??=1.8;b.startPageNumber??=1;b.pages=Array.isArray(b.pages)&&b.pages.length?b.pages.map(normalizeLineBreaks):[""];b.text=typeof b.text==="string"?normalizeLineBreaks(b.text):normalizeLineBreaks(b.pages.join("\n"))});showLibrary()}catch(e){console.error(e);alert("保存領域を初期化できませんでした。")}}
