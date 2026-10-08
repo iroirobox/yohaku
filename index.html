@@ -186,8 +186,8 @@ function buildTextPdf(pages,b,wmm,hmm){
   const pageObjs=pages.map((_,i)=>firstPage+i),contentObjs=pages.map((_,i)=>firstContent+i);
   obj(catalog,`<< /Type /Catalog /Pages ${pagesObj} 0 R >>`);
   obj(pagesObj,`<< /Type /Pages /Kids [${pageObjs.map(n=>n+" 0 R").join(" ")}] /Count ${pages.length} >>`);
-  obj(fontObj,`<< /Type /Font /Subtype /Type0 /BaseFont /${fontName} /Encoding /UniJIS-UCS2-V /DescendantFonts [${descFontObj} 0 R] >>`);
-  obj(descFontObj,`<< /Type /Font /Subtype /CIDFontType0 /BaseFont /${fontName} /CIDSystemInfo << /Registry (Adobe) /Ordering (Japan1) /Supplement 6 >> /DW 1000 /DW2 [880 -1000] >>`);
+  obj(fontObj,`<< /Type /Font /Subtype /Type0 /BaseFont /${fontName} /Encoding /UniJIS-UTF16-V /DescendantFonts [${descFontObj} 0 R] >>`);
+  obj(descFontObj,`<< /Type /Font /Subtype /CIDFontType0 /BaseFont /${fontName} /CIDSystemInfo << /Registry (Adobe) /Ordering (Japan1) /Supplement 2 >> /DW 1000 /DW2 [880 -1000] >>`);
   const W=pdfMm(wmm),H=pdfMm(hmm);
   pages.forEach((page,i)=>{
     const vm=clamp(Number(b.verticalMargin)||11,5,25),gutter=clamp(Number(b.gutter)||4,0,40);
