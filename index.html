@@ -135,6 +135,8 @@ dialog{border:0;padding:0;width:min(92vw,470px);background:transparent}dialog::b
     </form>
   </dialog>
 </body>
+<script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js" defer></script>
+<script src="https://cdn.jsdelivr.net/npm/@pdf-lib/fontkit@1.1.1/dist/fontkit.umd.min.js" defer></script>
 <script>
 const DB_NAME="YohakuCreativeDB",DB_VERSION=1,STORE="app",STATE_KEY="state";
 let state={books:[],activeBookId:null},currentBook=null,currentPage=0,dialogMode="new",saveTimer=null,inputUiTimer=null,renderFrame=0,composing=false;
@@ -174,53 +176,69 @@ $("settingsActionButton").onclick=openSettings;
 $("bookForm").onsubmit=e=>{e.preventDefault();if(dialogMode==="edit"&&currentBook){Object.assign(currentBook,{name:$("bookName").value.trim()||"無題",size:$("bookSize").value,charsPerLine:clamp(Number($("charsPerLine").value)||20,5,60),linesPerPage:clamp(Number($("linesPerPage").value)||16,5,40),fontFamily:$("fontFamily").value||"mincho",fontSize:clamp(Number($("fontSize").value)||16,8,36),lineGap:clamp(Number($("lineGap").value)||1.8,1,3),gutter:clamp(Number($("gutter").value)||4,0,40),verticalMargin:clamp(Number($("verticalMargin").value)||11,5,25),pageNumberPosition:$("pageNumberPosition").value||"bottom-outside",startPageNumber:clamp(Number($("startPageNumber").value)||1,1,9999),updatedAt:Date.now()});applyBookStyle(currentBook);$("editorTitle").textContent=currentBook.name;normalizeCurrentPages();applyBookStyle(currentBook);updateWritingLocation();void saveState();$("bookDialog").close()}else createBookFromForm()};
 $("dialogCloseButton").onclick=()=>$("bookDialog").close();$("dialogCancelButton").onclick=()=>$("bookDialog").close();$("bookDialog").addEventListener("click",e=>{if(e.target===$("bookDialog"))$("bookDialog").close()});
 $("backButton").onclick=()=>{saveCurrentPage();showLibrary()};
-function pdfUtf16Hex(s){let out="";for(const ch of String(s)){const cp=ch.codePointAt(0);if(cp<=0xffff)out+=cp.toString(16).padStart(4,"0");else{const n=cp-0x10000;out+=(0xd800+(n>>10)).toString(16).padStart(4,"0")+(0xdc00+(n&1023)).toString(16).padStart(4,"0")}}return `<${out.toUpperCase()}>`}
+const PDF_FONT_URLS={
+  mincho:"https://cdn.jsdelivr.net/gh/hiz8/Noto-Serif-CJK-JP.min@master/fonts/NotoSerifCJKjp-Regular.min.ttf",
+  gothic:"https://cdn.jsdelivr.net/gh/hiz8/Noto-Sans-CJK-JP.min@master/fonts/NotoSansCJKjp-Regular.min.ttf"
+};
+let pdfFontCache={};
+async function loadPdfFont(kind){
+  if(pdfFontCache[kind])return pdfFontCache[kind];
+  const res=await fetch(PDF_FONT_URLS[kind],{mode:"cors",cache:"force-cache"});
+  if(!res.ok)throw new Error("PDF font load failed: "+res.status);
+  const bytes=await res.arrayBuffer();
+  pdfFontCache[kind]=bytes;
+  return bytes;
+}
 function pdfMm(v){return v*72/25.4}
-function buildTextPdf(pages,b,wmm,hmm){
-  const enc=new TextEncoder(),chunks=[],offsets=[],push=x=>{const z=typeof x==="string"?enc.encode(x):x;chunks.push(z);return z.length};let len=0;
-  const add=x=>{len+=push(x)};
-  const obj=(n,body)=>{offsets[n]=len;add(`${n} 0 obj\n${body}\nendobj\n`)};
-  add("%PDF-1.4\n%\xFF\xFF\xFF\xFF\n");
-  const fontName=b.fontFamily==="gothic"?"HeiseiKakuGo-W5":"HeiseiMin-W3";
-  const catalog=1,pagesObj=2,fontObj=3,descFontObj=4,firstPage=5,firstContent=5+pages.length;
-  const pageObjs=pages.map((_,i)=>firstPage+i),contentObjs=pages.map((_,i)=>firstContent+i);
-  obj(catalog,`<< /Type /Catalog /Pages ${pagesObj} 0 R >>`);
-  obj(pagesObj,`<< /Type /Pages /Kids [${pageObjs.map(n=>n+" 0 R").join(" ")}] /Count ${pages.length} >>`);
-  obj(fontObj,`<< /Type /Font /Subtype /Type0 /BaseFont /${fontName} /Encoding /UniJIS-UTF16-V /DescendantFonts [${descFontObj} 0 R] >>`);
-  obj(descFontObj,`<< /Type /Font /Subtype /CIDFontType0 /BaseFont /${fontName} /CIDSystemInfo << /Registry (Adobe) /Ordering (Japan1) /Supplement 2 >> /DW 1000 /DW2 [880 -1000] >>`);
+async function buildTextPdf(pages,b,wmm,hmm){
+  if(!window.PDFLib||!window.fontkit)throw new Error("PDFライブラリを読み込めませんでした");
+  const {PDFDocument,rgb}=PDFLib;
+  const pdfDoc=await PDFDocument.create();
+  pdfDoc.registerFontkit(window.fontkit);
+  const kind=b.fontFamily==="gothic"?"gothic":"mincho";
+  const fontBytes=await loadPdfFont(kind);
+  const font=await pdfDoc.embedFont(fontBytes,{subset:true});
   const W=pdfMm(wmm),H=pdfMm(hmm);
+  const vm=clamp(Number(b.verticalMargin)||11,5,25),gutter=clamp(Number(b.gutter)||4,0,40);
+  const cpl=clamp(Number(b.charsPerLine)||20,5,60),lpp=clamp(Number(b.linesPerPage)||16,5,40);
+  const left=pdfMm(10+gutter),right=pdfMm(10),top=pdfMm(vm);
+  const usableW=Math.max(20,W-left-right),usableH=Math.max(20,H-top-pdfMm(vm));
+  const colStep=usableW/lpp;
+  const rowStep=usableH/cpl;
+  const fs=Math.max(7,Math.min(28,rowStep*0.72,colStep*0.72));
+  const ink=rgb(0.145,0.145,0.135);
   pages.forEach((page,i)=>{
-    const vm=clamp(Number(b.verticalMargin)||11,5,25),gutter=clamp(Number(b.gutter)||4,0,40);
-    const cpl=clamp(Number(b.charsPerLine)||20,5,60),lpp=clamp(Number(b.linesPerPage)||16,5,40);
-    const left=pdfMm(10+gutter),right=pdfMm(10),top=pdfMm(vm);
-    const usableW=Math.max(20,W-left-right),usableH=Math.max(20,H-top-pdfMm(vm));
-    const fs=Math.max(7,Math.min(28,(usableH/cpl)*0.82,(usableW/lpp)*0.82));
-    const colStep=usableW/lpp,rowStart=H-top-fs*0.55,fontRes=fontName.replace(/[^A-Za-z0-9-]/g,"");
-    let stream=`q\nBT\n/${fontRes} ${fs.toFixed(2)} Tf\n`;
+    const pg=pdfDoc.addPage([W,H]);
     const cols=String(page||"").split("\n").slice(0,lpp);
-    cols.forEach((line,col)=>{const x=W-left-colStep*(col+0.5),clean=String(line||"").replace(/\r/g,"");if(clean)stream+=`1 0 0 1 ${x.toFixed(2)} ${rowStart.toFixed(2)} Tm ${pdfUtf16Hex(clean)} Tj\n`});
+    cols.forEach((line,col)=>{
+      const clean=String(line||"").replace(/\r/g,"");
+      if(!clean)return;
+      const x=W-left-colStep*(col+0.5)-fs*0.5;
+      let y=H-top-fs;
+      let n=0;
+      for(const ch of clean){
+        if(ch==="\n")continue;
+        if(n>=cpl)break;
+        pg.drawText(ch,{x,y:y-n*rowStep,size:fs,font,color:ink});
+        n++;
+      }
+    });
     if((b.pageNumberPosition||"bottom-outside")!=="none"){
-      const num=String((Number(b.startPageNumber)||1)+i);let x=W/2;
+      const num=String((Number(b.startPageNumber)||1)+i);
+      let x=W/2;
       if(b.pageNumberPosition==="bottom-outside")x=((Number(b.startPageNumber)||1)+i)%2===1?W*0.10:W*0.90;
       else if(b.pageNumberPosition==="bottom-inside")x=((Number(b.startPageNumber)||1)+i)%2===1?W*0.90:W*0.10;
-      stream+=`/${fontRes} 6 Tf\n1 0 0 1 ${x.toFixed(2)} ${pdfMm(4).toFixed(2)} Tm ${pdfUtf16Hex(num)} Tj\n`;
+      pg.drawText(num,{x,y:pdfMm(4),size:6,font,color:ink});
     }
-    stream+=`ET\nQ\n`;
-    obj(contentObjs[i],`<< /Length ${enc.encode(stream).length} >>\nstream\n${stream}endstream`);
-    obj(pageObjs[i],`<< /Type /Page /Parent ${pagesObj} 0 R /MediaBox [0 0 ${W.toFixed(2)} ${H.toFixed(2)}] /Resources << /Font << /${fontRes} ${fontObj} 0 R >> >> /Contents ${contentObjs[i]} 0 R >>`);
   });
-  const total=Math.max(...pageObjs,...contentObjs,fontObj,descFontObj),xref=len;
-  add(`xref\n0 ${total+1}\n0000000000 65535 f \n`);
-  for(let n=1;n<=total;n++)add(`${String(offsets[n]||0).padStart(10,"0")} 00000 n \n`);
-  add(`trailer\n<< /Size ${total+1} /Root ${catalog} 0 R >>\nstartxref\n${xref}\n%%EOF`);
-  const out=new Uint8Array(len);let at=0;for(const c of chunks){out.set(c,at);at+=c.length}return out;
+  return await pdfDoc.save({useObjectStreams:false});
 }
 async function generatePdf(previewWindow=null){
   if(!currentBook)return;
   saveCurrentPage();
   normalizeCurrentPages();
   const d=bookDimensions(currentBook);
-  const pdf=buildTextPdf(currentBook.pages,currentBook,d.w,d.h);
+  const pdf=await buildTextPdf(currentBook.pages,currentBook,d.w,d.h);
   const blob=new Blob([pdf],{type:"application/pdf"});
   const url=URL.createObjectURL(blob);
   if(previewWindow && !previewWindow.closed){
