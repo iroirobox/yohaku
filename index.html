@@ -1346,12 +1346,10 @@ $("pdfButton").onclick=async()=>{
     console.error(e);
     if(previewWindow && !previewWindow.closed)previewWindow.close();
     const message=String(e&&e.message||"");
-    if(message.includes("明朝体フォント")){
-      alert("明朝体フォントを読み込めませんでした。index.html と GenEiKoburiMin6-R.ttf をGitHubの同じフォルダにアップロードして、ページを再読み込みしてください。");
-    }else if(message.includes("PDFライブラリ")||message.includes("タイムアウト")){
+    if(message.includes("PDFライブラリ")||message.includes("タイムアウト")){
       alert("PDF用ライブラリを読み込めませんでした。通信を確認して、ページを再読み込みしてからもう一度お試しください。");
     }else{
-      alert("PDFを作成できませんでした。通信状態と、GenEiKoburiMin6-R.ttf が index.html と同じフォルダにあることを確認してください。詳細はブラウザの開発者コンソールに記録されています。");
+      alert("PDFを作成できませんでした。フォントはHTML内に埋め込み済みです。ページを再読み込みして再試行してください。詳細はブラウザの開発者コンソールに記録されています。");
     }
   }finally{
     $("pdfButton").disabled=false;
