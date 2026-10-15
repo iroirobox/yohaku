@@ -115,7 +115,7 @@ dialog{border:0;padding:0;width:min(92vw,470px);background:transparent}dialog::b
         <label>
           ページ番号
           <select id="pageNumberPosition">
-            <option value="bottom-outside">下・左右（奇数左／偶数右）</option>
+            <option value="bottom-outside">下・左右</option>
             <option value="bottom-center">下・中央</option>
           </select>
         </label>
@@ -124,7 +124,6 @@ dialog{border:0;padding:0;width:min(92vw,470px);background:transparent}dialog::b
           <input id="startPageNumber" type="number" min="1" max="9999" value="1">
         </label>
       </div>
-      <p class="save-note" style="margin-top:16px">製本向けの初期設定：文庫サイズ・明朝体・1行40文字・17行。ページ番号は「下・左右」（奇数ページ左／偶数ページ右）です。文字数や行数は作品の内容・本のサイズに合わせて調整できます。設定は作品ごとに保存されます。</p>
       <div id="deleteWorkArea" hidden style="margin-top:18px;padding-top:16px;border-top:1px solid var(--line);">
         <button class="delete-book" type="button" id="deleteWorkButton">この作品を削除する</button>
       </div>
@@ -206,7 +205,7 @@ function buildTextPdf(pages,b,wmm,hmm){
   const gutter=clamp(Number(b.gutter)||4,0,40);
   const cpl=clamp(Number(b.charsPerLine)||40,5,60);
   const lpp=clamp(Number(b.linesPerPage)||17,5,40);
-  const top=pdfMm(vm),bottom=pdfMm(vm),outer=pdfMm(10),inner=pdfMm(10+gutter);
+  const top=pdfMm(vm),bottom=pdfMm(Math.max(vm,20)),outer=pdfMm(10),inner=pdfMm(10+gutter);
   const usableH=Math.max(20,H-top-bottom);
   const colStep=(W-outer-inner)/Math.max(1,lpp);
   // A Japanese glyph occupies roughly one em. Fit the requested character count without
@@ -273,12 +272,91 @@ function buildTextPdf(pages,b,wmm,hmm){
   pdf+=`trailer\n<< /Size ${objects.length+1} /Root ${catalogObj} 0 R >>\nstartxref\n${xref}\n%%EOF`;
   return new TextEncoder().encode(pdf);
 }
+let pdfLibrariesPromise=null;
+function loadExternalScript(src,readyCheck){
+  if(readyCheck())return Promise.resolve();
+  return new Promise((resolve,reject)=>{
+    const existing=[...document.scripts].find(el=>el.src===src);
+    if(existing){
+      existing.addEventListener("load",()=>readyCheck()?resolve():reject(new Error("PDFライブラリを読み込めませんでした。")));
+      existing.addEventListener("error",()=>reject(new Error("PDFライブラリを読み込めませんでした。")));
+      return;
+    }
+    const script=document.createElement("script");
+    script.src=src;
+    script.async=true;
+    script.onload=()=>readyCheck()?resolve():reject(new Error("PDFライブラリを読み込めませんでした。"));
+    script.onerror=()=>reject(new Error("PDFライブラリを読み込めませんでした。"));
+    document.head.appendChild(script);
+  });
+}
+async function ensurePdfLibraries(){
+  if(!pdfLibrariesPromise){
+    pdfLibrariesPromise=(async()=>{
+      await loadExternalScript("https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js",()=>!!window.PDFLib);
+      await loadExternalScript("https://cdn.jsdelivr.net/npm/@pdf-lib/fontkit@1.1.1/dist/fontkit.umd.min.js",()=>!!window.fontkit);
+    })().catch(e=>{pdfLibrariesPromise=null;throw e});
+  }
+  return pdfLibrariesPromise;
+}
+async function buildEmbeddedMinchoPdf(pages,b,wmm,hmm){
+  await ensurePdfLibraries();
+  const fontResponse=await fetch(new URL("GenEiKoburiMin6-R.ttf",location.href).href,{cache:"force-cache"});
+  if(!fontResponse.ok)throw new Error("明朝体フォントを読み込めません。");
+  const fontBytes=await fontResponse.arrayBuffer();
+  const {PDFDocument, rgb}=window.PDFLib;
+  const pdfDoc=await PDFDocument.create();
+  pdfDoc.registerFontkit(window.fontkit);
+  const font=await pdfDoc.embedFont(fontBytes,{subset:true});
+  const W=pdfMm(wmm),H=pdfMm(hmm);
+  const vm=clamp(Number(b.verticalMargin)||11,5,25);
+  const gutter=clamp(Number(b.gutter)||4,0,40);
+  const cpl=clamp(Number(b.charsPerLine)||40,5,60);
+  const lpp=clamp(Number(b.linesPerPage)||17,5,40);
+  const top=pdfMm(vm),outer=pdfMm(10),inner=pdfMm(10+gutter);
+  const usableH=Math.max(20,H-top-pdfMm(Math.max(vm,20)));
+  const numMode=b.pageNumberPosition||"bottom-outside";
+  const startNum=clamp(Number(b.startPageNumber)||1,1,9999);
+  const pageList=Array.isArray(pages)&&pages.length?pages:[""];
+  pageList.forEach((pageText,i)=>{
+    const page=pdfDoc.addPage([W,H]);
+    const isOdd=(i%2===0);
+    const left=isOdd?outer:inner;
+    const right=isOdd?inner:outer;
+    const pageUsableW=Math.max(20,W-left-right);
+    const colStep=pageUsableW/Math.max(1,lpp);
+    const fs=Math.max(7,Math.min(22,usableH/Math.max(1,cpl)*0.94,colStep*0.88));
+    const glyphStep=fs*1.04;
+    const cols=String(pageText||"").split("\n").slice(0,lpp);
+    cols.forEach((line,col)=>{
+      const chars=[...String(line||"").replace(/\r/g,"")].slice(0,cpl);
+      if(!chars.length)return;
+      const x=W-left-colStep*(col+.5)-fs*.5;
+      chars.forEach((ch,n)=>{
+        const y=H-top-fs-n*glyphStep;
+        page.drawText(ch,{x,y,font,size:fs,color:rgb(0,0,0),lineHeight:fs});
+      });
+    });
+    if(numMode!=="none"){
+      const num=String(startNum+i),numberSize=9;
+      const numberWidth=font.widthOfTextAtSize(num,numberSize);
+      const nx=numMode==="bottom-center"?(W-numberWidth)/2:(isOdd?pdfMm(10):W-pdfMm(10)-numberWidth);
+      page.drawText(num,{x:nx,y:pdfMm(6),font,size:numberSize,color:rgb(0,0,0)});
+    }
+  });
+  return await pdfDoc.save();
+}
 async function generatePdf(previewWindow=null){
   if(!currentBook)return;
   saveCurrentPage();
   normalizeCurrentPages();
   const d=bookDimensions(currentBook);
-  const pdf=buildTextPdf(currentBook.pages,currentBook,d.w,d.h);
+  let pdf;
+  if(currentBook.fontFamily==="gothic"){
+    pdf=buildTextPdf(currentBook.pages,currentBook,d.w,d.h);
+  }else{
+    pdf=await buildEmbeddedMinchoPdf(currentBook.pages,currentBook,d.w,d.h);
+  }
   const blob=new Blob([pdf],{type:"application/pdf"});
   const url=URL.createObjectURL(blob);
   if(previewWindow && !previewWindow.closed){
@@ -310,7 +388,14 @@ $("pdfButton").onclick=async()=>{
   }catch(e){
     console.error(e);
     if(previewWindow && !previewWindow.closed)previewWindow.close();
-    alert("PDFを作成できませんでした。もう一度お試しください。");
+    const message=String(e&&e.message||"");
+    if(message.includes("明朝体フォント")){
+      alert("明朝体フォントを読み込めませんでした。index.html と GenEiKoburiMin6-R.ttf をGitHubの同じフォルダにアップロードして、ページを再読み込みしてください。");
+    }else if(message.includes("PDFライブラリ")){
+      alert("PDF用ライブラリを読み込めませんでした。インターネット接続を確認して、もう一度お試しください。");
+    }else{
+      alert("PDFを作成できませんでした。インターネット接続と、フォントファイルが同じフォルダにあることを確認してください。");
+    }
   }finally{
     $("pdfButton").disabled=false;
     $("pdfButton").textContent="PDFを作る";
