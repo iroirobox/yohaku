@@ -76,11 +76,11 @@ dialog{border:0;padding:0;width:min(92vw,470px);background:transparent}dialog::b
       </label>
       <div class="two-cols">
         <label>
-          1行の文字数
+          1行の文字数（縦書き）
           <input id="charsPerLine" type="number" min="5" max="60" value="20">
         </label>
         <label>
-          1ページの行数
+          1ページの行数（縦の列数）
           <input id="linesPerPage" type="number" min="5" max="40" value="16">
         </label>
       </div>
@@ -115,7 +115,7 @@ dialog{border:0;padding:0;width:min(92vw,470px);background:transparent}dialog::b
         <label>
           ページ番号
           <select id="pageNumberPosition">
-            <option value="bottom-outside">下・左右</option>
+            <option value="bottom-outside">下・小口側（奇数左／偶数右）</option>
             <option value="bottom-center">下・中央</option>
             <option value="none">表示しない</option>
           </select>
@@ -125,6 +125,7 @@ dialog{border:0;padding:0;width:min(92vw,470px);background:transparent}dialog::b
           <input id="startPageNumber" type="number" min="1" max="9999" value="1">
         </label>
       </div>
+      <p class="save-note" style="margin-top:16px">おすすめ初期設定：文庫サイズ・明朝体・1行20文字・16行。ページ番号は小口側に配置し、奇数ページは左、偶数ページは右に表示します。設定は作品ごとに保存されます。</p>
       <div id="deleteWorkArea" hidden style="margin-top:18px;padding-top:16px;border-top:1px solid var(--line);">
         <button class="delete-book" type="button" id="deleteWorkButton">この作品を削除する</button>
       </div>
@@ -195,32 +196,44 @@ function buildTextPdf(pages,b,wmm,hmm){
   const W=pdfMm(wmm),H=pdfMm(hmm);
   const objects=[];
   const obj=(body)=>{objects.push(body);return objects.length};
+  // Use Japanese CID fonts; separate vertical text and horizontal page-number encodings.
   const fontName=b.fontFamily==="gothic"?"HeiseiKakuGo-W5":"HeiseiMin-W3";
-  const fontObj=obj(`<< /Type /Font /Subtype /Type0 /BaseFont /${fontName} /Encoding /UniJIS-UTF16-V /DescendantFonts [0 0 R] >>`);
-  const descObj=obj(`<< /Type /Font /Subtype /CIDFontType0 /BaseFont /${fontName} /CIDSystemInfo << /Registry (Adobe) /Ordering (Japan1) /Supplement 6 >> /DW 1000 /DW2 [880 -1000] >>`);
+  const fontV=obj(`<< /Type /Font /Subtype /Type0 /BaseFont /${fontName} /Encoding /UniJIS-UTF16-V /DescendantFonts [0 0 R] >>`);
+  const fontH=obj(`<< /Type /Font /Subtype /Type0 /BaseFont /${fontName} /Encoding /UniJIS-UTF16-H /DescendantFonts [0 0 R] >>`);
+  const descV=obj(`<< /Type /Font /Subtype /CIDFontType0 /BaseFont /${fontName} /CIDSystemInfo << /Registry (Adobe) /Ordering (Japan1) /Supplement 6 >> /DW 1000 /DW2 [880 -1000] >>`);
+  const descH=obj(`<< /Type /Font /Subtype /CIDFontType0 /BaseFont /${fontName} /CIDSystemInfo << /Registry (Adobe) /Ordering (Japan1) /Supplement 6 >> /DW 1000 >>`);
   const pageRefs=[];
   const vm=clamp(Number(b.verticalMargin)||11,5,25);
   const gutter=clamp(Number(b.gutter)||4,0,40);
   const cpl=clamp(Number(b.charsPerLine)||20,5,60);
   const lpp=clamp(Number(b.linesPerPage)||16,5,40);
-  const left=pdfMm(10+gutter),right=pdfMm(10),top=pdfMm(vm),bottom=pdfMm(vm);
-  const usableW=Math.max(20,W-left-right),usableH=Math.max(20,H-top-bottom);
-  const colStep=usableW/Math.max(1,lpp);
-  // One Japanese full-width glyph should advance by approximately one font size.
-  // Previously the full page height was divided into cpl slots, which created conspicuous gaps.
+  const top=pdfMm(vm),bottom=pdfMm(vm),outer=pdfMm(10),inner=pdfMm(10+gutter);
+  const usableH=Math.max(20,H-top-bottom);
+  const colStep=(W-outer-inner)/Math.max(1,lpp);
+  // A Japanese glyph occupies roughly one em. Fit the requested character count without
+  // stretching glyph positions to fill the entire page height.
   const fs=Math.max(7,Math.min(22,usableH/Math.max(1,cpl)*0.94,colStep*0.88));
   const glyphStep=fs*1.04;
   const numMode=b.pageNumberPosition||"bottom-outside";
   const startNum=clamp(Number(b.startPageNumber)||1,1,9999);
   pages.forEach((page,i)=>{
-    let stream="q\nBT\n/F1 "+fs.toFixed(2)+" Tf\n0 g\n";
+    // Book gutter alternates sides: odd pages have the binding margin on the right,
+    // even pages on the left. Odd page numbers sit left; even page numbers sit right.
+    const isOdd=(i%2===0);
+    const left=isOdd?outer:inner;
+    const right=isOdd?inner:outer;
+    const pageUsableW=Math.max(20,W-left-right);
+    const pageColStep=pageUsableW/Math.max(1,lpp);
+    const pageFs=Math.max(7,Math.min(22,usableH/Math.max(1,cpl)*0.94,pageColStep*0.88));
+    const pageGlyphStep=pageFs*1.04;
+    let stream="q\nBT\n/F1 "+pageFs.toFixed(2)+" Tf\n0 g\n";
     const cols=String(page||"").split("\n").slice(0,lpp);
     cols.forEach((line,col)=>{
       const chars=[...String(line||"").replace(/\r/g,"")].slice(0,cpl);
       if(!chars.length)return;
-      const x=W-left-colStep*(col+.5);
+      const x=W-left-pageColStep*(col+.5);
       chars.forEach((ch,n)=>{
-        const y=H-top-fs-n*glyphStep;
+        const y=H-top-pageFs-n*pageGlyphStep;
         stream+=`1 0 0 1 ${x.toFixed(2)} ${y.toFixed(2)} Tm ${pdfUtf16Hex(ch)} Tj\n`;
       });
     });
@@ -228,24 +241,27 @@ function buildTextPdf(pages,b,wmm,hmm){
     if(numMode!=="none"){
       const num=String(startNum+i);
       const numberSize=9;
-      let nx=W/2-numberSize*num.length*0.25;
-      if(numMode==="bottom-outside"){
-        // Odd pages at the left edge, even pages at the right edge (book's outer edge).
-        nx=(i%2===0)?pdfMm(10):W-pdfMm(10)-numberSize*num.length*0.5;
+      // Horizontal encoding keeps page numbers upright and evenly spaced.
+      stream+=`BT\n/F2 ${numberSize} Tf\n0 g\n`;
+      if(numMode==="bottom-center"){
+        stream+=`1 0 0 1 ${(W/2-numberSize*num.length*0.28).toFixed(2)} ${pdfMm(6).toFixed(2)} Tm ${pdfUtf16Hex(num)} Tj\n`;
+      }else{
+        const nx=isOdd?pdfMm(10):W-pdfMm(10)-numberSize*num.length*0.55;
+        stream+=`1 0 0 1 ${nx.toFixed(2)} ${pdfMm(6).toFixed(2)} Tm ${pdfUtf16Hex(num)} Tj\n`;
       }
-      const ny=pdfMm(6);
-      stream+=`BT\n/F1 ${numberSize} Tf\n0 g\n1 0 0 1 ${nx.toFixed(2)} ${ny.toFixed(2)} Tm ${pdfUtf16Hex(num)} Tj\nET\n`;
+      stream+="ET\n";
     }
     stream+="Q\n";
     const len=stream.length;
     const contentObj=obj(`<< /Length ${len} >>\nstream\n${stream}endstream`);
-    const pageObj=obj(`<< /Type /Page /Parent 0 0 R /MediaBox [0 0 ${W.toFixed(2)} ${H.toFixed(2)}] /Resources << /Font << /F1 ${fontObj} 0 R >> >> /Contents ${contentObj} 0 R >>`);
+    const pageObj=obj(`<< /Type /Page /Parent 0 0 R /MediaBox [0 0 ${W.toFixed(2)} ${H.toFixed(2)}] /Resources << /Font << /F1 ${fontV} 0 R /F2 ${fontH} 0 R >> >> /Contents ${contentObj} 0 R >>`);
     pageRefs.push(pageObj);
   });
   const pagesObj=obj(`<< /Type /Pages /Kids [${pageRefs.map(n=>`${n} 0 R`).join(" ")}] /Count ${pageRefs.length} >>`);
   const catalogObj=obj(`<< /Type /Catalog /Pages ${pagesObj} 0 R >>`);
   for(const n of pageRefs){objects[n-1]=objects[n-1].replace('/Parent 0 0 R',`/Parent ${pagesObj} 0 R`)}
-  objects[fontObj-1]=objects[fontObj-1].replace('/DescendantFonts [0 0 R]',`/DescendantFonts [${descObj} 0 R]`);
+  objects[fontV-1]=objects[fontV-1].replace('/DescendantFonts [0 0 R]',`/DescendantFonts [${descV} 0 R]`);
+  objects[fontH-1]=objects[fontH-1].replace('/DescendantFonts [0 0 R]',`/DescendantFonts [${descH} 0 R]`);
   let pdf="%PDF-1.4\n%----\n";
   const offsets=[0];
   for(let i=0;i<objects.length;i++){
