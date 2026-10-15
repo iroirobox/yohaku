@@ -234,7 +234,7 @@ function buildTextPdf(pages,b,wmm,hmm){
   for(const n of pageRefs){objects[n-1]=objects[n-1].replace('/Parent 0 0 R',`/Parent ${pagesObj} 0 R`)}
   // Patch the descendant font reference in the Type0 font.
   objects[fontObj-1]=objects[fontObj-1].replace('/DescendantFonts [0 0 R]',`/DescendantFonts [${descObj} 0 R]`);
-  let pdf="%PDF-1.4\n%\xE2\xE3\xCF\xD3\n";
+  let pdf="%PDF-1.4\n%----\n";
   const offsets=[0];
   for(let i=0;i<objects.length;i++){
     offsets[i+1]=pdf.length;
