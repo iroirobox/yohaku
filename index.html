@@ -223,9 +223,13 @@ function buildTextPdf(pages,b,wmm,hmm){
     const pageFs=Math.max(7,Math.min(22,usableH/Math.max(1,cpl)*0.94,pageColStep*0.88));
     const pageGlyphStep=pageFs*1.04;
     let stream="q\nBT\n/F1 "+pageFs.toFixed(2)+" Tf\n0 g\n";
-    const cols=String(page||"").split("\n").slice(0,lpp);
+    const cols=keepPunctuationWithPreviousLine(String(page||"").split("\n").slice(0,lpp),cpl);
     cols.forEach((line,col)=>{
-      const chars=[...String(line||"").replace(/\r/g,"")].slice(0,cpl);
+      const allChars=[...String(line||"").replace(/\r/g,"")];
+      const punctuation=/[、。，．！？：；]/;
+      const chars=allChars.length>cpl && punctuation.test(allChars[cpl])
+        ? allChars.slice(0,cpl+1)
+        : allChars.slice(0,cpl);
       if(!chars.length)return;
       const x=W-left-pageColStep*(col+.5);
       chars.forEach((ch,n)=>{
